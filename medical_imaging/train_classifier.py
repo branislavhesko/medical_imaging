@@ -1,0 +1,89 @@
+import dataclasses
+import os
+from PIL import Image
+from timm import create_model
+import torch
+from torch.utils.data import DataLoader
+from torchvision import datasets
+import torchvision.transforms as T
+from tqdm import tqdm
+
+def build_model(model_name: str = "resnet18", num_classes: int = 2):
+    model = create_model(
+        model_name,
+        pretrained=True,
+        num_classes=num_classes,
+        in_chans=3,
+    )
+    return model
+
+
+def build_transforms():
+    return T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        T.RandomHorizontalFlip(),
+        T.RandomVerticalFlip(),
+        T.RandomRotation(10),
+        T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+        T.Resize((224, 224)),
+    ])
+
+
+@dataclasses.dataclass
+class BedSoresClassifierTrainerConfig:
+    path_to_train_data: str = "data/"
+    model_name: str = "efficientnet_b0"
+    num_classes: int = -1
+    batch_size: int = 4
+    learning_rate: float = 0.001
+    num_epochs: int = 10
+    device: str = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    
+    def __post_init__(self):
+        if self.num_classes == -1:
+            self.num_classes = len(os.listdir(self.path_to_train_data))
+
+
+def get_train_dataloader(config: BedSoresClassifierTrainerConfig):
+    train_dataset = datasets.ImageFolder(
+        root=config.path_to_train_data,
+        transform=build_transforms()
+    )
+    if config.num_classes == -1:
+        config.num_classes = len(train_dataset.classes)
+    return DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+
+class BedSoresClassifierTrainer:
+    def __init__(self) -> None:
+        self.config = BedSoresClassifierTrainerConfig()
+        self.model = build_model(self.config.model_name, self.config.num_classes)
+        self.train_dataloader = get_train_dataloader(self.config)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
+        self.criterion = torch.nn.CrossEntropyLoss()
+        
+    def train(self):
+        self.model.to(self.config.device)
+        self.model.train()
+        print(f"Training model on {self.config.device} for {self.config.num_epochs} epochs, num classes: {self.config.num_classes}")
+        for epoch in tqdm(range(self.config.num_epochs)):
+            accuracy = 0
+            total = 0
+            loss_total = 0
+            for images, labels in tqdm(self.train_dataloader):
+                images = images.to(self.config.device)
+                labels = labels.to(self.config.device)
+                outputs = self.model(images)
+                loss = self.criterion(outputs, labels)
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                accuracy += (outputs.argmax(dim=1) == labels).sum().item()
+                total += labels.size(0)
+                loss_total += loss.item()
+            print(f"Epoch {epoch+1}/{self.config.num_epochs}, Loss: {loss_total/total}, Accuracy: {accuracy/total}")
+            
+
+if __name__ == "__main__":
+    trainer = BedSoresClassifierTrainer()
+    trainer.train()
