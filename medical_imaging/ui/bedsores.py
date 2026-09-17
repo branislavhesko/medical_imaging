@@ -81,8 +81,8 @@ def call_server(image_bytes: bytes, filename: str) -> dict:
     return response.json()
 
 
-@ui.page("/")
-def main_page() -> None:
+@ui.page("/bedsores")
+def bedsores_page() -> None:
     ui.query("body").style("background: #0f172a;")
     ui.add_head_html(
         "<style>"
@@ -95,11 +95,14 @@ def main_page() -> None:
 
     # ---- Header ---------------------------------------------------------
     with ui.row().classes(
-        "w-full items-center justify-center gap-3 py-6"
+        "w-full items-center gap-3 py-6 px-6"
     ).style(
         "background:linear-gradient(120deg,#0e7490,#0891b2);"
         "box-shadow:0 4px 24px rgba(0,0,0,.35)"
     ):
+        ui.button(icon="arrow_back", on_click=lambda: ui.navigate.to("/")).props(
+            "flat round color=white"
+        ).tooltip("Back to plugins")
         ui.icon("healing", size="2.4rem").classes("text-white")
         with ui.column().classes("gap-0"):
             ui.label("Pressure Injury Classifier").classes(
@@ -265,4 +268,5 @@ def _render_prediction(result: dict) -> None:
     ).classes("text-slate-500 text-xs italic mt-2")
 
 
-ui.run(title="Pressure Injury Classifier", port=8080, reload=False, favicon="🩺")
+if __name__ == "__main__":
+    ui.run(title="Pressure Injury Classifier", port=8080, reload=False, favicon="🩺")
