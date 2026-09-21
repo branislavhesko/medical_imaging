@@ -1,13 +1,26 @@
 import concurrent.futures
 import io
+import logging
 import queue
 import threading
 import time
 
 from fastapi import UploadFile, File
+from pdf2image import convert_from_bytes
 from PIL import Image
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
+from tqdm import tqdm
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class OCRThread(threading.Thread):
@@ -17,6 +30,7 @@ class OCRThread(threading.Thread):
     def __init__(self):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        logger.info(f"Using device: {self.device} for model {self.MODEL_ID}")
         self.processor = None
         self.model = None
         self.lock = threading.Lock()
@@ -40,7 +54,7 @@ class OCRThread(threading.Thread):
                     future.set_exception(ValueError(f"Unknown task: {task}"))
             except Exception as e:
                 future.set_exception(e)
-                print(f"Error performing OCR: {e}")
+                logger.exception("Error performing OCR")
             finally:
                 self.tasks.task_done()
 
@@ -52,18 +66,45 @@ class OCRThread(threading.Thread):
         return future.result()
 
     @torch.no_grad()
-    def _do_predict(self, image: bytes):
+    def _do_predict(self, uploaded_file: UploadFile | bytes | Image.Image | list[Image.Image]):
         with self.lock:
             self.last_used = time.time()
             if self.model is None or self.processor is None:
                 self._load_model()
-            if isinstance(image, (bytes, bytearray)):
-                image = Image.open(io.BytesIO(image)).convert("RGB")
             
-            inputs = self.processor.prepare_ocr_inputs(image, device=self.device)
-            output = self.model.generate(**inputs, max_new_tokens=4096, do_sample=False)
-            text = self.processor.decode_ocr(output, inputs['input_ids'])
-            return {"text": text}
+            if isinstance(uploaded_file, list):
+                images = [img.convert("RGB") if isinstance(img, Image.Image) else img for img in uploaded_file]
+            elif isinstance(uploaded_file, Image.Image):
+                images = [uploaded_file.convert("RGB")]
+            else:
+                if hasattr(uploaded_file, "file"):
+                    uploaded_file.file.seek(0)
+                    raw_bytes = uploaded_file.file.read()
+                    uploaded_file.file.seek(0)
+                elif hasattr(uploaded_file, "read"):
+                    raw_bytes = uploaded_file.read()
+                elif isinstance(uploaded_file, (bytes, bytearray)):
+                    raw_bytes = bytes(uploaded_file)
+                else:
+                    raise TypeError(f"Unsupported input type: {type(uploaded_file)}")
+
+                file_type = self._get_file_type_from_bytes(raw_bytes)
+                if file_type == "pdf":
+                    images = self._parse_pdf_into_images(raw_bytes)
+                else:
+                    images = [Image.open(io.BytesIO(raw_bytes)).convert("RGB")]
+            
+            if not images:
+                return {"text": "", "pages": []}
+
+            texts = []
+            for img in tqdm(images):
+                inputs = self.processor.prepare_ocr_inputs(img, device=self.device)
+                output = self.model.generate(**inputs, max_new_tokens=4096, do_sample=False)
+                text = self.processor.decode_ocr(output, inputs['input_ids'])
+                texts.append(text)
+
+            return {"text": "\n\n".join(texts), "pages": texts}
 
     def _load_model(self):
         if self.processor is None:
@@ -77,5 +118,43 @@ class OCRThread(threading.Thread):
     def _initialize(self):
         return self._load_model()
 
-    def _parse_pdf_into_images(self, pdf: UploadFile):
-        pass
+    def _get_file_type_from_bytes(self, data: bytes | bytearray | UploadFile) -> str:
+        if hasattr(data, "file"):
+            data.file.seek(0)
+            header = data.file.read(1024)
+            data.file.seek(0)
+        elif hasattr(data, "read") and hasattr(data, "seek"):
+            pos = data.tell() if hasattr(data, "tell") else 0
+            header = data.read(1024)
+            data.seek(pos)
+        elif isinstance(data, (bytes, bytearray)):
+            header = data[:1024]
+        else:
+            raise TypeError(f"Unsupported input type for file type detection: {type(data)}")
+
+        if header.startswith(b"%PDF-"):
+            return "pdf"
+        return "image"
+
+    def _parse_pdf_into_images(
+        self, pdf: UploadFile | bytes, page_numbers: list[int] | None = None
+    ) -> list[Image.Image]:
+        """Rasterise a PDF. ``page_numbers`` (1-based) limits rendering to the
+        span covering those pages; the returned list is still indexed by
+        absolute page number (unrendered pages are ``None``)."""
+        if hasattr(pdf, "file"):
+            pdf.file.seek(0)
+            pdf_bytes = pdf.file.read()
+            pdf.file.seek(0)
+        elif isinstance(pdf, (bytes, bytearray)):
+            pdf_bytes = bytes(pdf)
+        elif hasattr(pdf, "read"):
+            pdf_bytes = pdf.read()
+        else:
+            raise TypeError(f"Unsupported pdf type: {type(pdf)}")
+        if not page_numbers:
+            return convert_from_bytes(pdf_bytes)
+        first, last = min(page_numbers), max(page_numbers)
+        rendered = convert_from_bytes(pdf_bytes, first_page=first, last_page=last)
+        # Pad so that list index == page number - 1 for select_pages().
+        return [None] * (first - 1) + rendered

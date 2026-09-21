@@ -3,15 +3,16 @@
 The dashboard lists the available medical-imaging plugins. Each plugin is a
 separate NiceGUI page; selecting one navigates to it. Currently the
 :mod:`~medical_imaging.ui.bedsores` pressure-injury classifier is wired up as a
-subpage at ``/bedsores`` — importing that module registers its route.
+subpage at ``/bedsores`` and the :mod:`~medical_imaging.ui.ocr` document OCR
+tool at ``/ocr`` — importing those modules registers their routes.
 
-Run the FastAPI model server first::
-
-    python -m medical_imaging.server
-
-then launch this UI::
+Launch everything with::
 
     python -m medical_imaging.ui
+
+The model server (:mod:`medical_imaging.server`) is mounted into this app under
+``/api`` (e.g. ``POST /api/ocr``), so a single process serves both the UI and
+the HTTP API. Models are loaded lazily on first use.
 
 Log in with one of the demo accounts below (username / password)::
 
@@ -28,8 +29,13 @@ from fastapi.responses import RedirectResponse
 from nicegui import Client, app, ui
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Importing the module registers its ``@ui.page("/bedsores")`` route with NiceGUI.
+# Importing the modules registers their ``@ui.page(...)`` routes with NiceGUI.
 from medical_imaging.ui import bedsores  # noqa: F401
+from medical_imaging.ui import ocr  # noqa: F401
+from medical_imaging.server import app as model_api
+
+# Expose the model server's HTTP API from the same process.
+app.mount("/api", model_api)
 
 # ---------------------------------------------------------------------------
 # Demo credentials — replace with a real user store for anything beyond a demo.
@@ -64,6 +70,13 @@ PLUGINS: list[Plugin] = [
         icon="healing",
         color="#0891b2",
         description="Stage bedsores from a wound image with a confidence breakdown.",
+    ),
+    Plugin(
+        name="Document OCR",
+        route="/ocr",
+        icon="document_scanner",
+        color="#7c3aed",
+        description="Extract text from scanned images or PDF documents.",
     ),
     Plugin(
         name="Wound Segmentation",
@@ -103,8 +116,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") or path == "/api":
+            return await call_next(request)  # plain HTTP API, no login session
         if not app.storage.user.get("authenticated", False):
-            path = request.url.path
             if path in Client.page_routes.values() and path not in UNRESTRICTED_ROUTES:
                 app.storage.user["referrer_path"] = path
                 return RedirectResponse("/login")

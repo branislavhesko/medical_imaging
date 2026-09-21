@@ -39,6 +39,7 @@ class BedSoresClassifierThread(threading.Thread):
                     self.model = None
                     self.stop_event.set()
                     break
+                continue
             try:
                 if task == "predict":
                     result = self._do_predict(task_data)

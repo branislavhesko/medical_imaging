@@ -1,15 +1,13 @@
 """A rich NiceGUI front-end for the bedsores (pressure ulcer) classifier.
 
-Run the FastAPI model server first::
-
-    python -m medical_imaging.server
-
-then launch this UI::
+Launch with::
 
     python -m medical_imaging.ui
 
-The UI uploads an image, sends it to the ``/bedsores`` endpoint and renders the
-prediction with a confidence gauge and a per-class probability breakdown.
+The model runs in-process (see :mod:`medical_imaging.server`); set
+``BEDSORES_SERVER_URL`` to use a separately running model server instead.
+The page uploads an image, classifies it and renders the prediction with a
+confidence gauge and a per-class probability breakdown.
 """
 
 from __future__ import annotations
@@ -20,7 +18,10 @@ import os
 import requests
 from nicegui import events, run, ui
 
-SERVER_URL = os.environ.get("BEDSORES_SERVER_URL", "http://localhost:8000")
+from medical_imaging.server import run_bedsores
+
+# Optional: point at a remote model server instead of running in-process.
+SERVER_URL = os.environ.get("BEDSORES_SERVER_URL")
 
 # Clinical metadata per class: colour, icon and a short description.
 # Ordered from least to most severe so we can render a consistent legend.
@@ -71,7 +72,9 @@ def info_for(class_name: str) -> dict[str, str]:
 
 
 def call_server(image_bytes: bytes, filename: str) -> dict:
-    """Blocking HTTP call to the model server (run off the event loop)."""
+    """Blocking classification call (run off the event loop)."""
+    if not SERVER_URL:
+        return run_bedsores(image_bytes)
     response = requests.post(
         f"{SERVER_URL}/bedsores",
         files={"image": (filename, image_bytes, "application/octet-stream")},
@@ -195,9 +198,10 @@ def _render_error(message: str) -> None:
             ui.icon("error", size="1.6rem").classes("text-red-400")
             ui.label("Prediction failed").classes("text-red-200 font-semibold")
         ui.label(message).classes("text-red-300 text-sm break-all")
-        ui.label(
-            f"Is the model server running at {SERVER_URL}?"
-        ).classes("text-red-400/70 text-xs")
+        if SERVER_URL:
+            ui.label(
+                f"Is the model server running at {SERVER_URL}?"
+            ).classes("text-red-400/70 text-xs")
 
 
 def _render_prediction(result: dict) -> None:
