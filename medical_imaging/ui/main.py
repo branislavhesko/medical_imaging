@@ -285,7 +285,8 @@ def _render_plugin_card(plugin: Plugin) -> None:
 
 ui.run(
     title="Medical Imaging Suite",
-    port=8080,
+    port=8013,
+    host="localhost",
     reload=False,
     favicon="🩺",
     storage_secret="medical-imaging-suite-secret-change-me",
