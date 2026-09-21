@@ -1,4 +1,5 @@
 import concurrent.futures
+import gc
 import queue
 import threading
 import time
@@ -35,10 +36,7 @@ class BedSoresClassifierThread(threading.Thread):
                 task, task_data, future = self.tasks.get(timeout=10)
             
             except queue.Empty:
-                if self.last_used < time.time() - self.UNUSED_TIMEOUT:
-                    self.model = None
-                    self.stop_event.set()
-                    break
+                self._unload_if_idle()
                 continue
             try:
                 if task == "predict":
@@ -57,6 +55,16 @@ class BedSoresClassifierThread(threading.Thread):
         self.tasks.put(("predict", image, future))
         return future.result()
                 
+    def _unload_if_idle(self):
+        """Free the model after a period of inactivity; the thread keeps running."""
+        if self.model is None or time.time() - self.last_used < self.UNUSED_TIMEOUT:
+            return
+        with self.lock:
+            if self.model is None or time.time() - self.last_used < self.UNUSED_TIMEOUT:
+                return
+            self.model = None
+            gc.collect()
+
     @torch.no_grad()
     def _do_predict(self, image: UploadFile):
         with self.lock:
@@ -65,7 +73,8 @@ class BedSoresClassifierThread(threading.Thread):
                 self.model = self._load_model()
             image = Image.open(io.BytesIO(image)).convert("RGB")
             image = self.transforms(image)
-            image = image.unsqueeze(0).to(self.config.device)
+            # Use the detected device, not the one the model was trained on.
+            image = image.unsqueeze(0).to(self.device)
             output = self.model(image)
             probabilities = torch.softmax(output, dim=1).squeeze(0)
             predicted_index = int(probabilities.argmax().item())
@@ -81,5 +90,5 @@ class BedSoresClassifierThread(threading.Thread):
                 
     def _load_model(self):
         self.model = torch.export.load(self.MODEL_PATH).module()
-        self.model.to(self.config.device)
+        self.model.to(self.device)
         return self.model

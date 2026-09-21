@@ -41,6 +41,19 @@ def build_transforms():
     ])
     
 
+def export_model(model: torch.nn.Module, path: str) -> None:
+    """Save *model* as a ``.pt2`` that loads on any device with any batch size.
+
+    Exporting on CPU keeps the archive free of CUDA tensors (a CUDA export
+    cannot be loaded by CPU-only torch at all), and the dynamic batch dim lets
+    inference run single images even if training used a bigger batch.
+    """
+    model = model.eval().cpu()
+    example = torch.zeros(2, 3, 224, 224)
+    dynamic_shapes = {"x": {0: torch.export.Dim("batch")}}
+    torch.export.save(torch.export.export(model, (example,), dynamic_shapes=dynamic_shapes), path)
+
+
 def build_test_transforms():
     return T.Compose([
         T.ToTensor(),
@@ -119,7 +132,8 @@ class BedSoresClassifierTrainer:
             if current_accuracy > best_accuracy:
                 best_accuracy = current_accuracy
                 self.logger.info(f"Best accuracy: {best_accuracy}, saving model to model_best.pt2")
-                torch.export.save(torch.export.export(self.model.eval(), (images,)), f"model_best.pt2")
+                export_model(self.model, "model_best.pt2")
+                self.model.to(self.config.device)
                 OmegaConf.save(self.config, "model_best.yaml")
             self.logger.info(f"Epoch {epoch+1}/{self.config.num_epochs}, Loss: {loss_total/total}, Accuracy: {current_accuracy}")
             self.scheduler.step()

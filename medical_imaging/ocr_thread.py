@@ -1,4 +1,5 @@
 import concurrent.futures
+import gc
 import io
 import logging
 import queue
@@ -44,6 +45,7 @@ class OCRThread(threading.Thread):
             try:
                 task, task_data, future = self.tasks.get(timeout=10)
             except queue.Empty:
+                self._unload_if_idle()
                 continue
 
             try:
@@ -65,46 +67,71 @@ class OCRThread(threading.Thread):
         self.tasks.put(("predict", image, future))
         return future.result()
 
+    def _unload_if_idle(self):
+        """Drop the ~7 GB of weights once nobody has used them for a while.
+
+        The thread itself keeps running so callers never see a dead thread;
+        the next request simply reloads the model.
+        """
+        if self.model is None or time.time() - self.last_used < self.UNUSED_TIMEOUT:
+            return
+        with self.lock:
+            # Re-check: a request may have arrived while we waited for the lock.
+            if self.model is None or time.time() - self.last_used < self.UNUSED_TIMEOUT:
+                return
+            logger.info(f"Unloading {self.MODEL_ID} after {self.UNUSED_TIMEOUT}s idle")
+            self.model = None
+            self.processor = None
+            gc.collect()
+
     @torch.no_grad()
     def _do_predict(self, uploaded_file: UploadFile | bytes | Image.Image | list[Image.Image]):
         with self.lock:
-            self.last_used = time.time()
-            if self.model is None or self.processor is None:
-                self._load_model()
-            
-            if isinstance(uploaded_file, list):
-                images = [img.convert("RGB") if isinstance(img, Image.Image) else img for img in uploaded_file]
-            elif isinstance(uploaded_file, Image.Image):
-                images = [uploaded_file.convert("RGB")]
+            try:
+                return self._predict_locked(uploaded_file)
+            finally:
+                # Count the whole job as "use" so a long PDF isn't unloaded
+                # the moment it finishes.
+                self.last_used = time.time()
+
+    def _predict_locked(self, uploaded_file):
+        self.last_used = time.time()
+        if self.model is None or self.processor is None:
+            self._load_model()
+        
+        if isinstance(uploaded_file, list):
+            images = [img.convert("RGB") if isinstance(img, Image.Image) else img for img in uploaded_file]
+        elif isinstance(uploaded_file, Image.Image):
+            images = [uploaded_file.convert("RGB")]
+        else:
+            if hasattr(uploaded_file, "file"):
+                uploaded_file.file.seek(0)
+                raw_bytes = uploaded_file.file.read()
+                uploaded_file.file.seek(0)
+            elif hasattr(uploaded_file, "read"):
+                raw_bytes = uploaded_file.read()
+            elif isinstance(uploaded_file, (bytes, bytearray)):
+                raw_bytes = bytes(uploaded_file)
             else:
-                if hasattr(uploaded_file, "file"):
-                    uploaded_file.file.seek(0)
-                    raw_bytes = uploaded_file.file.read()
-                    uploaded_file.file.seek(0)
-                elif hasattr(uploaded_file, "read"):
-                    raw_bytes = uploaded_file.read()
-                elif isinstance(uploaded_file, (bytes, bytearray)):
-                    raw_bytes = bytes(uploaded_file)
-                else:
-                    raise TypeError(f"Unsupported input type: {type(uploaded_file)}")
+                raise TypeError(f"Unsupported input type: {type(uploaded_file)}")
 
-                file_type = self._get_file_type_from_bytes(raw_bytes)
-                if file_type == "pdf":
-                    images = self._parse_pdf_into_images(raw_bytes)
-                else:
-                    images = [Image.open(io.BytesIO(raw_bytes)).convert("RGB")]
-            
-            if not images:
-                return {"text": "", "pages": []}
+            file_type = self._get_file_type_from_bytes(raw_bytes)
+            if file_type == "pdf":
+                images = self._parse_pdf_into_images(raw_bytes)
+            else:
+                images = [Image.open(io.BytesIO(raw_bytes)).convert("RGB")]
+        
+        if not images:
+            return {"text": "", "pages": []}
 
-            texts = []
-            for img in tqdm(images):
-                inputs = self.processor.prepare_ocr_inputs(img, device=self.device)
-                output = self.model.generate(**inputs, max_new_tokens=4096, do_sample=False)
-                text = self.processor.decode_ocr(output, inputs['input_ids'])
-                texts.append(text)
+        texts = []
+        for img in tqdm(images):
+            inputs = self.processor.prepare_ocr_inputs(img, device=self.device)
+            output = self.model.generate(**inputs, max_new_tokens=4096, do_sample=False)
+            text = self.processor.decode_ocr(output, inputs['input_ids'])
+            texts.append(text)
 
-            return {"text": "\n\n".join(texts), "pages": texts}
+        return {"text": "\n\n".join(texts), "pages": texts}
 
     def _load_model(self):
         if self.processor is None:
