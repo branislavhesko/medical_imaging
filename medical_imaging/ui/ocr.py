@@ -253,6 +253,15 @@ def ocr_page() -> None:
 
     upload.on_upload(handle_upload)
     start_btn.on_click(start_conversion)
+    upload.on(
+        "failed",
+        lambda: ui.notify(
+            "Upload failed — the file may exceed the server's size limit.",
+            color="negative",
+            timeout=8000,
+        ),
+        args=[],
+    )
 
 
 def _render_ready_state(is_pdf: bool) -> None:

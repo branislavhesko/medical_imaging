@@ -182,6 +182,15 @@ def bedsores_page() -> None:
             _render_prediction(result)
 
     upload.on_upload(handle_upload)
+    upload.on(
+        "failed",
+        lambda: ui.notify(
+            "Upload failed — the file may exceed the server's size limit.",
+            color="negative",
+            timeout=8000,
+        ),
+        args=[],
+    )
 
 
 def _render_empty_state() -> None:
