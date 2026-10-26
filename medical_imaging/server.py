@@ -77,6 +77,18 @@ def detect_bedsores(image: UploadFile = File(...)):
     return {"message": "Bedsores detection result", **prediction}
 
 
+@app.post("/restart")
+def restart():
+    global _bedsores_classifier_thread, _ocr_engine_thread
+    _bedsores_classifier_thread.stop_event.set()
+    _ocr_engine_thread.stop_event.set()
+    _bedsores_classifier_thread.join()
+    _ocr_engine_thread.join()
+    _bedsores_classifier_thread = None
+    _ocr_engine_thread = None
+    return {"message": "Restarted"}
+
+
 @app.post("/ocr")
 def perform_ocr(file: UploadFile = File(...), pages: str = Form("")):
     try:
