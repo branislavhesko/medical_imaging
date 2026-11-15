@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 export TOKENIZERS_PARALLELISM=false
 
-python3 -m medical_imaging.anonymizer.dataset \
+python3 -m medical_imaging.anonymizer.create_dataset \
     --model "${MODEL:-Qwen/Qwen3-8B}" \
     --n-patients "${N_PATIENTS:-250}" \
     --docs-per-patient "${DOCS_PER_PATIENT:-2}" \
