@@ -1,4 +1,5 @@
 from collections import Counter
+import dataclasses
 
 import pandas as pd
 import torch
@@ -28,6 +29,15 @@ LABEL_STYLES = {
     "EMAIL": "black on bright_blue",
     "HOSPITAL": "black on bright_magenta",
 }
+
+
+@dataclasses.dataclass
+class TrainingConfig:
+    max_width: int = 18
+    batch_size: int = 8
+    lr: float = 1e-4
+    epochs: int = 10
+    save_path: str = "models/gemma2_spanner.pth"
 
 
 def focal_loss(logits, targets, valid, alpha=0.25, gamma=2.0):
@@ -81,8 +91,8 @@ def span_f1(preds, data):
 
 
 class SpanNERTrainer:
-    def __init__(self):
-        self.model = get_gemma2_spanner()
+    def __init__(self, config: TrainingConfig):
+        self.model = get_gemma2_spanner(max_width=config.max_width)
         self.model.to("cuda")
         self.dtype = torch.bfloat16
         # Only the frozen encoder runs in bf16. Trainable weights must stay fp32:
@@ -90,8 +100,13 @@ class SpanNERTrainer:
         # weights (the -4.6 prior bias can't move at all), so the head never learns.
         self.model.enc.to(self.dtype)
         self.tokenizer = AutoTokenizer.from_pretrained("google/embeddinggemma-2")
-        self.data_path = "data/synthetic_notes.parquet"
-        self.dataset = get_dataloader(self.data_path, self.tokenizer, max_width=self.model.K)
+        self.data_paths = ["data/synthetic_notes.parquet", "data/templated_notes.parquet"]
+        self.dataset = get_dataloader(
+            self.data_paths, 
+            self.tokenizer, 
+            max_width=config.max_width, 
+            batch_size=config.batch_size
+        )
         self.console = Console()
         enc_params = [p for p in self.model.enc.parameters() if p.requires_grad]
         enc_ids = {id(p) for p in enc_params}
@@ -111,7 +126,7 @@ class SpanNERTrainer:
                                        batch["word_pos"], batch["word_mask"])
         return logits.float(), valid
 
-    def train(self, epochs=10):
+    def train(self, epochs: int = 10):
         self.model.train()
         self.model.enc.eval()  # frozen: no dropout noise in the features
         for epoch in range(epochs):
@@ -160,7 +175,7 @@ class SpanNERTrainer:
 
     def evaluate(self, thr=0.3, n_docs=None, show_text=True):
         """Run inference on held-out synthetic test notes and print entities with rich."""
-        data = pd.read_parquet(self.data_path)
+        data = pd.read_parquet(self.data_paths[0])
         # data = data[(data["source"] == "synthetic") & (data["split"] == "test")]
         data = data[data["source"] == "real"].sample(n=5, random_state=42)
         data = data.reset_index(drop=True)
@@ -205,6 +220,7 @@ class SpanNERTrainer:
 
 
 if __name__ == "__main__":
-    trainer = SpanNERTrainer()
-    trainer.train()
+    config = TrainingConfig()
+    trainer = SpanNERTrainer(config)
+    trainer.train(config.epochs)
     trainer.evaluate()

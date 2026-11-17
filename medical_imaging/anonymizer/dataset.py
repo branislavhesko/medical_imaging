@@ -197,9 +197,9 @@ class SpanCollator:
         }
 
 
-def get_dataloader(dataset_path: str, tokenizer, batch_size: int = 8, max_width: int = 12,
+def get_dataloader(dataset_paths: list[str], tokenizer, batch_size: int = 8, max_width: int = 12,
                    split: str = "train", shuffle: bool = True):
-    data = pd.read_parquet(dataset_path)
+    data = pd.concat([pd.read_parquet(path) for path in dataset_paths])
     # Only the train split: the test split (grouped by patient) is for evaluation.
     data = data[(data["source"] == "synthetic") & (data["split"] == split)]
     dataset = Dataset(data, tokenizer, max_width=max_width)

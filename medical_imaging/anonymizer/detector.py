@@ -39,9 +39,21 @@ class SpanNER(nn.Module):
         return logits, valid
 
 
-def get_gemma2_spanner():
-    enc = AutoModel.from_pretrained("google/embeddinggemma-2")   # text tower only
-    return SpanNER(enc, hidden=768)
+def get_gemma2_spanner(
+    model_path: str = "google/embeddinggemma-2",
+    hidden: int = 768,
+    num_labels: int = len(LABELS),
+    max_width: int = 12,
+    dropout: float = 0.1,
+):
+    enc = AutoModel.from_pretrained(model_path)   # text tower only
+    return SpanNER(
+        enc, 
+        hidden=hidden, 
+        num_labels=num_labels, 
+        max_width=max_width, 
+        dropout=dropout
+    )
 
 
 if __name__ == "__main__":
